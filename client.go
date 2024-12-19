@@ -79,7 +79,7 @@ func NewClient(addr string, options ...Option) *Client {
 	return c
 }
 
-func (c *Client) ProcessInfo2() (*ProcessInfo2Response, error) {
+func (c *Client) ProcessInfo2(buf []byte) (*ProcessInfo2Response, error) {
 	conn, err := c.dial(c.addr)
 	if err != nil {
 		return nil, err
@@ -100,21 +100,28 @@ func (c *Client) ProcessInfo2() (*ProcessInfo2Response, error) {
 		return nil, fmt.Errorf("unexpected response header: commandSet=%v (expected 0xff) commandID=%v (expected 0x00)", header.CommandSet, header.CommandID)
 	}
 
-	buf := bytes.NewBuffer(nil)
-	if _, err := io.CopyN(buf, conn, int64(header.Size-headerSize)); err != nil {
+	expectedSize := int(header.Size - headerSize)
+	if cap(buf) < expectedSize {
+		buf = make([]byte, expectedSize)
+	} else {
+		buf = buf[:expectedSize]
+	}
+	if _, err := io.ReadAtLeast(conn, buf, expectedSize); err != nil {
 		return nil, err
 	}
 
-	if err := binary.Read(buf, binary.LittleEndian, &resp.ProcessID); err != nil {
+	b := bytes.NewBuffer(buf)
+
+	if err := binary.Read(b, binary.LittleEndian, &resp.ProcessID); err != nil {
 		return nil, fmt.Errorf("unable to read process ID: %w", err)
 	}
 
-	if err := binary.Read(buf, binary.LittleEndian, &resp.GUID); err != nil {
+	if err := binary.Read(b, binary.LittleEndian, &resp.GUID); err != nil {
 		return nil, fmt.Errorf("unable to read process ID: %w", err)
 	}
 
 	// now parse the strings out
-	p := &nettrace.Parser{Buffer: buf}
+	p := &nettrace.Parser{Buffer: b}
 	p.UTF16NTS()
 	resp.CommandLine = p.UTF16NTS()
 	p.UTF16NTS()
@@ -198,4 +205,61 @@ func (s *Session) Read(b []byte) (int, error) {
 
 func (s *Session) Close() error {
 	return s.c.StopTracing(s.ID)
+}
+
+// Attach profiler
+// TODO: Describe the function
+// TODO: Use existing connection
+func (c *Client) AttachProfiler(p AttachProfilerPayload) (err error) {
+	// Every session has its own IPC connection which cannot be reused for any
+	// other purposes; in order to close the connection another connection
+	// to be opened - see `StopTracing`.
+	conn, err := c.dial(c.addr)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		// The connection should not be disposed if a session has been created.
+		if err != nil {
+			_ = conn.Close()
+		}
+	}()
+
+	buf := new(bytes.Buffer)
+	if err := p.Write(buf); err != nil {
+		return err
+	}
+	if err := writeMessage(conn, CommandSetProfiler, ProfilerAttachProfiler, buf.Bytes()); err != nil {
+		return err
+	}
+
+	header, err := readResponseHeader(conn)
+	if err != nil {
+		return err
+	}
+
+	if header.CommandSet != CommandSetServer || header.CommandID != 00 {
+		return fmt.Errorf("unexpected response header: commandSet=%v (expected 0xff) commandID=%v (expected 0x00)", header.CommandSet, header.CommandID)
+	}
+
+	expectedSize := int(header.Size - headerSize)
+
+	buf.Reset()
+	buf.Grow(expectedSize)
+
+	if _, err := io.CopyN(buf, conn, int64(expectedSize)); err != nil {
+		return err
+	}
+
+	r := bytes.NewReader(buf.Bytes())
+
+	var resp AttachProfilerResponse
+
+	if err := binary.Read(r, binary.LittleEndian, &resp.Result); err != nil {
+		return fmt.Errorf("unable to read status: %w", err)
+	}
+
+	fmt.Println("AttachProfilerResponse:", resp)
+
+	return nil
 }

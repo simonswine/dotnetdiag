@@ -58,6 +58,11 @@ const (
 	EventPipeCollectTracing2
 )
 
+const (
+	_ = iota
+	ProfilerAttachProfiler
+)
+
 type CollectTracingPayload struct {
 	CircularBufferSizeMB uint32
 	Format               Format
@@ -102,6 +107,57 @@ type ProcessInfo2Response struct {
 	Arch           string
 	AssemblyName   string
 	RuntimeVersion string
+}
+
+type CLSID struct {
+	X  uint32
+	S1 uint16
+	S2 uint16
+	C  [8]byte
+}
+
+func (p CLSID) Write(b *bytes.Buffer) error {
+	if err := binary.Write(b, binary.LittleEndian, p.X); err != nil {
+		return err
+	}
+	if err := binary.Write(b, binary.LittleEndian, p.S1); err != nil {
+		return err
+	}
+	if err := binary.Write(b, binary.LittleEndian, p.S2); err != nil {
+		return err
+	}
+	if _, err := b.Write(p.C[:]); err != nil {
+		return err
+	}
+	return nil
+}
+
+type AttachProfilerPayload struct {
+	AttachTimeout uint32
+	ProfilerGUID  CLSID
+	ProfilerPath  string
+	ClientData    []byte
+}
+
+func (p AttachProfilerPayload) Write(b *bytes.Buffer) error {
+	if err := binary.Write(b, binary.LittleEndian, p.AttachTimeout); err != nil {
+		return err
+	}
+	if err := p.ProfilerGUID.Write(b); err != nil {
+		return err
+	}
+	if _, err := b.Write(mustStringBytes(p.ProfilerPath)); err != nil {
+		return err
+	}
+	if err := binary.Write(b, binary.LittleEndian, uint32(len(p.ClientData))); err != nil {
+		return err
+	}
+	_, err := b.Write(p.ClientData)
+	return err
+}
+
+type AttachProfilerResponse struct {
+	Result int32
 }
 
 func writeMessage(w io.Writer, commandSet, commandID uint8, payload []byte) error {
